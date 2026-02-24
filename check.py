@@ -90,6 +90,8 @@ def check_homework(
     verbose: bool = True,
     dpi: int = 200,
     delay: float = DEFAULT_DELAY,
+    start_page: int = 1,
+    end_page: int | None = None,
 ) -> str:
     """
     Check a homework PDF for mistakes using an LLM.
@@ -103,6 +105,8 @@ def check_homework(
         verbose: Whether to print progress to console.
         dpi: Resolution for rendering PDF pages (default: 200).
         delay: Delay in seconds between API calls (default: 20 for free tier).
+        start_page: First page to process (1-indexed, default: 1).
+        end_page: Last page to process (1-indexed, default: None = all pages).
     
     Returns:
         The complete feedback from the LLM.
@@ -112,9 +116,31 @@ def check_homework(
         print(f"📄 Reading PDF: {pdf_path}")
     
     page_images = extract_images_from_pdf(pdf_path, dpi=dpi)
+    total_pages = len(page_images)
+    
+    # Validate and apply page range
+    if start_page < 1:
+        raise ValueError(f"start_page must be >= 1, got {start_page}")
+    
+    if end_page is None:
+        end_page = total_pages
+    
+    if end_page < start_page:
+        raise ValueError(f"end_page ({end_page}) must be >= start_page ({start_page})")
+    
+    if start_page > total_pages:
+        raise ValueError(f"start_page ({start_page}) exceeds total pages ({total_pages})")
+    
+    # Clamp end_page to actual page count
+    end_page = min(end_page, total_pages)
+    
+    # Slice to get only the requested pages (convert to 0-indexed)
+    page_images = page_images[start_page - 1:end_page]
     
     if verbose:
-        print(f"📑 Found {len(page_images)} pages")
+        print(f"📑 Found {total_pages} pages total")
+        if start_page > 1 or end_page < total_pages:
+            print(f"📌 Processing pages {start_page} to {end_page}")
     
     # Set up output directory for per-page files
     if output_dir is None:
@@ -138,39 +164,42 @@ def check_homework(
     all_feedback: list[str] = []
     
     # Process each page
-    for i, page_image in enumerate(page_images, start=1):
+    for idx, page_image in enumerate(page_images):
+        # Calculate actual page number in the original PDF
+        actual_page_num = start_page + idx
+        
         if verbose:
-            print(f"📖 Processing page {i}/{len(page_images)}...")
+            print(f"📖 Processing page {actual_page_num} ({idx + 1}/{len(page_images)} in range)...")
         
         # Add page image to conversation
-        agent.add_page(page_image, page_number=i)
+        agent.add_page(page_image, page_number=actual_page_num)
         
         # Get feedback for this page
         try:
             feedback = agent.get_feedback(validate=validate)
-            all_feedback.append(f"=== Page {i} Feedback ===\n{feedback}")
+            all_feedback.append(f"=== Page {actual_page_num} Feedback ===\n{feedback}")
             
             # Save feedback immediately to per-page file
-            filepath = save_page_feedback(output_dir, i, feedback)
+            filepath = save_page_feedback(output_dir, actual_page_num, feedback)
             if verbose:
                 print(f"   💾 Saved to {filepath}")
             
             if verbose:
-                print(f"✅ Page {i} processed successfully")
+                print(f"✅ Page {actual_page_num} processed successfully")
         
         except FeedbackValidationError as e:
-            warning_msg = f"⚠️  Page {i}: Validation warning - {e}"
+            warning_msg = f"⚠️  Page {actual_page_num}: Validation warning - {e}"
             raw_feedback = agent.feedback_history[-1] if agent.feedback_history else 'No feedback received'
-            all_feedback.append(f"=== Page {i} Feedback ===\n[VALIDATION WARNING: {e}]\n{raw_feedback}")
+            all_feedback.append(f"=== Page {actual_page_num} Feedback ===\n[VALIDATION WARNING: {e}]\n{raw_feedback}")
             
             # Still save the feedback even with validation warning
-            filepath = save_page_feedback(output_dir, i, f"[VALIDATION WARNING: {e}]\n\n{raw_feedback}")
+            filepath = save_page_feedback(output_dir, actual_page_num, f"[VALIDATION WARNING: {e}]\n\n{raw_feedback}")
             if verbose:
                 print(f"   💾 Saved to {filepath}")
                 print(warning_msg)
         
         # Rate limiting delay (skip after last page)
-        if i < len(page_images) and delay > 0:
+        if idx < len(page_images) - 1 and delay > 0:
             if verbose:
                 print(f"   ⏳ Waiting {delay}s before next request...")
             time.sleep(delay)
@@ -184,13 +213,15 @@ def check_homework(
     complete_feedback = "\n\n".join(all_feedback)
     
     # Add summary header
+    page_range_str = f"{start_page}-{end_page}" if start_page != 1 or end_page != total_pages else "All"
     summary = f"""
 {'=' * 60}
 HOMEWORK FEEDBACK REPORT
 {'=' * 60}
 PDF: {pdf_path}
 Model: {agent.model}
-Total Pages: {len(page_images)}
+Total Pages in PDF: {total_pages}
+Pages Processed: {page_range_str} ({len(page_images)} pages)
 Open Questions: {open_questions if open_questions else 'None'}
 {'=' * 60}
 
@@ -278,6 +309,20 @@ Examples:
         help="Directory to save per-page feedback files (default: <pdf_name>_feedback/)."
     )
     
+    parser.add_argument(
+        "--start_page",
+        type=int,
+        default=1,
+        help="First page to process (1-indexed, default: 1)."
+    )
+    
+    parser.add_argument(
+        "--end_page",
+        type=int,
+        default=None,
+        help="Last page to process (1-indexed, default: None = all pages)."
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -289,7 +334,9 @@ Examples:
             validate=not args.no_validate,
             verbose=not args.quiet,
             dpi=args.dpi,
-            delay=args.delay
+            delay=args.delay,
+            start_page=args.start_page,
+            end_page=args.end_page
         )
         
         # Print feedback if no output file specified

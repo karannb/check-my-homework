@@ -8,7 +8,8 @@ from google import genai
 from google.genai import types
 
 # Default model - Gemini 2.5 Flash
-DEFAULT_MODEL: str = "gemini-3-flash-preview"
+DEFAULT_MODEL: str = "gemini-2.5-flash"
+# DEFAULT_MODEL: str = "gemini-3-flash-preview"
 
 SYSTEM_PROMPT = """
 You are a strict grader that checks for mistakes in homework PDFs.
